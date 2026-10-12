@@ -13,3 +13,25 @@ export const audits = sqliteTable('audits', { id: text('id').primaryKey(), actor
 export const rateLimits = sqliteTable('rate_limits', { key: text('key').primaryKey(), count: integer('count').notNull(), resetAt: integer('reset_at').notNull() });
 
 export const transactionGuards = sqliteTable('transaction_guards', { id: text('id').primaryKey(), passed: integer('passed').notNull() }, t => [check('transaction_must_pass', sql`${t.passed} = 1`)]);
+
+export const paymentInvoices = sqliteTable('payment_invoices', {
+    id: text('id').primaryKey(), orderId: text('order_id').notNull().unique().references(() => orders.id),
+    address: text('address').notNull(), addressHex: text('address_hex').notNull(), amountUnits: integer('amount_units').notNull(),
+    baseUnits: integer('base_units').notNull(), rate: text('rate').notNull(), status: text('status').notNull().default('waiting'),
+    createdAt: integer('created_at').notNull(), payBefore: integer('pay_before').notNull(), watchUntil: integer('watch_until').notNull(),
+    txId: text('tx_id'), eventId: text('event_id').unique(), confirmedAt: integer('confirmed_at'), reviewReason: text('review_reason').notNull().default(''),
+}, t => [uniqueIndex('payment_amount_never_reused').on(t.address, t.amountUnits), index('payment_invoice_status').on(t.status, t.createdAt)]);
+export const paymentReceipts = sqliteTable('payment_receipts', {
+    eventId: text('event_id').primaryKey(), txId: text('tx_id').notNull(), address: text('address').notNull(), fromHex: text('from_hex').notNull(),
+    amountUnits: text('amount_units').notNull(), block: integer('block').notNull(), blockTimestamp: integer('block_timestamp').notNull(),
+    invoiceId: text('invoice_id').references(() => paymentInvoices.id), status: text('status').notNull(), reason: text('reason').notNull().default(''),
+    createdAt: integer('created_at').notNull(),
+}, t => [index('payment_receipts_created').on(t.createdAt)]);
+export const paymentWatchers = sqliteTable('payment_watchers', {
+    address: text('address').primaryKey(), addressHex: text('address_hex').notNull(), scanFrom: integer('scan_from').notNull(),
+    windowEnd: integer('window_end'), fingerprint: text('fingerprint').notNull().default(''), leaseUntil: integer('lease_until').notNull().default(0),
+    leaseToken: text('lease_token').notNull().default(''), lastSuccessAt: integer('last_success_at'), lastError: text('last_error').notNull().default(''),
+});
+export const paymentTransactions = sqliteTable('payment_transactions', {
+    id: text('id').primaryKey(), txId: text('tx_id').notNull(), address: text('address').notNull(), processedAt: integer('processed_at').notNull(),
+}, t => [uniqueIndex('payment_transaction_address').on(t.txId, t.address)]);

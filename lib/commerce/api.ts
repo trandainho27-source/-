@@ -1,6 +1,8 @@
 import type { RuntimeEnv, Staff, Product, Order } from './types.ts';
 import { uid, randomToken, sha, safeEqual, hashPassword, verifyPassword, encrypt, decrypt, hmac } from './security.ts';
 import { categorySeed, productSeed } from './seed.ts';
+import { PaymentError, paymentConfiguration } from './tron.ts';
+import { createInvoice, invoiceForOrder, checkTransaction, reconcilePayments, paymentDashboard } from './payments.ts';
 class ApiError extends Error {
     constructor(public status: number, message: string) {
         super(message);
@@ -58,7 +60,7 @@ async function limit(db: D1Database, request: Request, action: string, max: numb
 }
 async function expire(db: D1Database) {
     const ts = now();
-    await db.batch([stmt(db, "UPDATE orders SET status='expired' WHERE status='pending' AND expires_at<?", ts), stmt(db, "UPDATE inventory SET status='available',order_id=NULL WHERE status='reserved' AND order_id IN(SELECT id FROM orders WHERE status IN('expired','cancelled'))"), stmt(db, 'DELETE FROM rate_limits WHERE reset_at<?', ts), stmt(db, 'DELETE FROM sessions WHERE expires_at<?', ts)]);
+    await db.batch([stmt(db, "UPDATE orders SET status='expired' WHERE status='pending' AND expires_at<?", ts), stmt(db, "UPDATE inventory SET status='available',order_id=NULL WHERE status='reserved' AND order_id IN(SELECT id FROM orders WHERE status IN('expired','cancelled'))"), stmt(db, "UPDATE payment_invoices SET status='expired' WHERE status='waiting' AND watch_until<?", ts), stmt(db, 'DELETE FROM rate_limits WHERE reset_at<?', ts), stmt(db, 'DELETE FROM sessions WHERE expires_at<?', ts)]);
 }
 const productQuery = `SELECT p.*, (SELECT count(*) FROM inventory i WHERE i.product_id=p.id AND i.status='available') AS stock FROM products p`;
 async function catalog(db: D1Database, env: RuntimeEnv) {
@@ -73,7 +75,7 @@ async function catalog(db: D1Database, env: RuntimeEnv) {
         key: string;
         value: string;
     }>(db, 'SELECT * FROM settings')).map(s => [s.key, s.value]));
-    return { products, categories, settings, demo: env.DEMO_MODE === 'true', paymentEnabled: false };
+    return { products, categories, settings, demo: env.DEMO_MODE === 'true', paymentEnabled: (await paymentConfiguration(env)).enabled };
 }
 async function authenticated(db: D1Database, request: Request, roles?: string[]) {
     const token = request.headers.get('cookie')?.split(';').map(s => s.trim()).find(s => s.startsWith('cq_session='))?.slice(11);
@@ -102,6 +104,7 @@ async function lookup(db: D1Database, env: RuntimeEnv, id: string, secret: strin
     const { lookup_hash, ...result } = order!;
     result.items = await all(db, 'SELECT product_id,product_name,price,quantity FROM order_items WHERE order_id=?', id);
     result.tickets = await all(db, 'SELECT * FROM tickets WHERE order_id=? ORDER BY created_at DESC', id);
+    result.payment = await invoiceForOrder(db, id);
     if (result.status === 'fulfilled') {
         const cards = await all<{
             ciphertext: string;
@@ -132,7 +135,7 @@ function fulfillmentGuard(db: D1Database, orderId: string, provider: string, ref
             AND NOT EXISTS(SELECT 1 FROM order_items l WHERE l.order_id=o.id AND l.quantity!=(SELECT count(*) FROM inventory i WHERE i.order_id=o.id AND i.product_id=l.product_id AND i.status='delivered')))
         THEN 1 ELSE 0 END`, guardId, orderId, provider, reference), stmt(db, 'DELETE FROM transaction_guards WHERE id=?', guardId)];
 }
-export async function settleOrder(db: D1Database, id: string, actor: string, reason: string, provider: string, reference: string, amount?: number) {
+export async function settleOrder(db: D1Database, id: string, actor: string, reason: string, provider: string, reference: string, amount?: number, extra: D1PreparedStatement[] = []) {
     const order = await first<Order>(db, 'SELECT * FROM orders WHERE id=?', id);
     if (!order)
         fail(404, '订单不存在');
@@ -152,6 +155,7 @@ export async function settleOrder(db: D1Database, id: string, actor: string, rea
     const ts = now();
     try {
         await db.batch([
+            ...extra,
             stmt(db, "UPDATE orders SET status='paid',paid_at=?,payment_provider=?,payment_ref=? WHERE id=? AND status='pending' AND expires_at>?", ts, provider, reference, id, ts),
             stmt(db, "UPDATE inventory SET status='delivered' WHERE order_id=? AND status='reserved' AND EXISTS(SELECT 1 FROM orders WHERE id=? AND status='paid')", id, id),
             ...fulfillmentGuard(db, id, provider, reference),
@@ -312,7 +316,8 @@ export async function handleApi(request: Request, env: RuntimeEnv): Promise<Resp
         if (path === 'orders/cancel' && method === 'POST') {
             const b = await body(request);
             await lookup(db, env, str(b.id, 64), str(b.secret, 128));
-            await db.batch([stmt(db, "UPDATE orders SET status='cancelled' WHERE id=? AND status='pending'", b.id), stmt(db, "UPDATE inventory SET status='available',order_id=NULL WHERE order_id=? AND status='reserved' AND EXISTS(SELECT 1 FROM orders WHERE id=? AND status='cancelled')", b.id, b.id)]);
+            await db.batch([stmt(db, "UPDATE orders SET status='cancelled' WHERE id=? AND status='pending' AND NOT EXISTS(SELECT 1 FROM payment_invoices WHERE order_id=?)", b.id, b.id), stmt(db, "UPDATE inventory SET status='available',order_id=NULL WHERE order_id=? AND status='reserved' AND EXISTS(SELECT 1 FROM orders WHERE id=? AND status='cancelled')", b.id, b.id)]);
+            if (await invoiceForOrder(db, b.id)) fail(409, '支付单已生成，系统会在到账核验结束后自动关闭未付款订单');
             return json({ ok: true });
         }
         if (path === 'tickets' && method === 'POST') {
@@ -327,9 +332,21 @@ export async function handleApi(request: Request, env: RuntimeEnv): Promise<Resp
             return json({ ok: true, id }, 201);
         }
         if (path === 'payments/create' && method === 'POST') {
+            await limit(db, request, 'payment-create', 10);
             const b = await body(request);
-            await lookup(db, env, str(b.id, 64), str(b.secret, 128));
-            fail(503, '在线支付尚未接入，请联系商家。订单不会自动变成已支付。');
+            const order = await lookup(db, env, str(b.id, 64), str(b.secret, 128));
+            return json(await createInvoice(db, env, order));
+        }
+        if (path === 'payments/check' && method === 'POST') {
+            await limit(db, request, 'payment-check', 20);
+            const b = await body(request), id = str(b.id, 64), secret = str(b.secret, 128);
+            const order = await lookup(db, env, id, secret);
+            if (!order.payment) fail(409, '请先生成 USDT 支付单');
+            let message = '已检查链上到账，尚未确认时请稍后再查，请勿重复付款。';
+            if (b.txId) message = (await checkTransaction(db, env, id, str(b.txId, 100), settleOrder)).message;
+            else await reconcilePayments(env, settleOrder, order.payment!.address);
+            await expire(db);
+            return json({ order: await lookup(db, env, id, secret), message });
         }
         if (path === 'payments/webhook' && method === 'POST') {
             if (!env.PAYMENT_WEBHOOK_SECRET || env.PAYMENT_PROVIDER !== 'custom-hmac')
@@ -354,9 +371,17 @@ export async function handleApi(request: Request, env: RuntimeEnv): Promise<Resp
             return json(await settleOrder(db, str(b.orderId, 64), 'payment', '已验证自定义 HMAC 回调', 'custom-hmac', str(b.transactionId, 100), b.amount));
         }
         if (path.startsWith('admin/')) {
-            const roleMap: Record<string, string[]> = { products: ['owner', 'operator'], inventory: ['owner', 'operator'], categories: ['owner', 'operator'], settings: ['owner'], staff: ['owner'], audits: ['owner'] };
+            const roleMap: Record<string, string[]> = { products: ['owner', 'operator'], inventory: ['owner', 'operator'], categories: ['owner', 'operator'], settings: ['owner'], staff: ['owner'], audits: ['owner'], payment: ['owner'] };
             const section = path.split('/')[1], p = await authenticated(db, request, roleMap[section]);
             await expire(db);
+            if (section === 'payment' && method === 'GET') return json(await paymentDashboard(db, env));
+            if (section === 'payment' && method === 'POST') {
+                await limit(db, request, 'admin-payment', 10);
+                const b = await body(request);
+                const result = b.txId ? await checkTransaction(db, env, str(b.orderId, 64), str(b.txId, 100), settleOrder) : await reconcilePayments(env, settleOrder);
+                await audit(db, p.id, 'payment.reconcile', str(b.orderId, 64) || 'wallet').run();
+                return json(result);
+            }
             if (section === 'overview' && method === 'GET') {
                 const stats = await first(db, "SELECT count(*) AS orders, coalesce(sum(CASE WHEN status='fulfilled' THEN total ELSE 0 END),0) AS revenue, sum(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending, sum(CASE WHEN status='fulfilled' THEN 1 ELSE 0 END) AS fulfilled FROM orders");
                 const stock = await first(db, "SELECT count(*) AS stock FROM inventory WHERE status='available'");
@@ -493,9 +518,16 @@ export async function handleApi(request: Request, env: RuntimeEnv): Promise<Resp
         fail(404, '接口不存在');
     }
     catch (error) {
-        if (error instanceof ApiError)
+        if (error instanceof ApiError || error instanceof PaymentError)
             return json({ error: error.message }, error.status);
         console.error('commerce request failed', error instanceof Error ? error.message : 'unknown');
         return json({ error: '服务暂时不可用，请稍后重试或联系管理员' }, 500);
     }
+}
+
+// Cloudflare Cron invokes this while customer pages are closed.
+export async function runPaymentReconciliation(env: RuntimeEnv) {
+    if (!env.DB || env.DEMO_MODE === 'true' || !env.TRONGRID_API_KEY) return;
+    try { await reconcilePayments(env, settleOrder); }
+    finally { await expire(env.DB); }
 }

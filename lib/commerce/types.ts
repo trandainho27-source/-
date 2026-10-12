@@ -5,6 +5,9 @@ export interface RuntimeEnv {
     DEMO_MODE?: string;
     PAYMENT_WEBHOOK_SECRET?: string;
     PAYMENT_PROVIDER?: string;
+    TRON_RECEIVING_ADDRESS?: string;
+    TRONGRID_API_KEY?: string;
+    USDT_CNY_RATE?: string;
 }
 export interface Product {
     id: string;
@@ -48,6 +51,7 @@ export interface Order {
     expires_at: number;
     paid_at: number | null;
     demo: number;
+    payment?: PaymentInvoice | null;
     items: {
         product_name: string;
         quantity: number;
@@ -56,6 +60,22 @@ export interface Order {
     }[];
     delivery?: string[];
     tickets?: Ticket[];
+}
+export interface PaymentInvoice {
+    id: string;
+    order_id: string;
+    address: string;
+    amount: string;
+    base_amount: string;
+    adjustment: string;
+    rate: string;
+    status: string;
+    created_at: number;
+    pay_before: number;
+    watch_until: number;
+    tx_id: string | null;
+    review_reason: string;
+    network: 'TRON / TRC20';
 }
 export interface Ticket {
     id: string;

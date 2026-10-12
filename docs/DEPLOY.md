@@ -21,7 +21,7 @@
 | D1 绑定 | `DB` |
 
 4. Cloudflare 的部署按钮支持按 `wrangler.json` 自动创建所需 D1。若普通 GitHub 导入未自动创建，本项目部署脚本会查找 / 创建 `chongqi-commerce-db` 并运行迁移。所用构建令牌需要 Workers 编辑与 D1 编辑权限。
-5. `.dev.vars.example` 声明了两项必填秘密。按页面填写；如果界面没有显示该步骤，部署后进入 **Worker → Settings → Variables and Secrets**，添加以下两项，类型选择 **Secret**：
+5. `.dev.vars.example` 声明了两项初始化秘密，以及可选的支付查询密钥。按页面填写；如果界面没有显示该步骤，部署后进入 **Worker → Settings → Variables and Secrets**，添加以下两项，类型选择 **Secret**：
 
 | 名称 | 填什么 | 用途 |
 | --- | --- | --- |
@@ -34,7 +34,7 @@
 node scripts/generate-secret.mjs
 ```
 
-6. 保持普通环境变量 `DEMO_MODE=false`、`PAYMENT_PROVIDER=disabled`。
+6. 保持普通环境变量 `DEMO_MODE=false`；收款未配置前让 `PAYMENT_PROVIDER` 为空或 `disabled`。准备启用 USDT 时按 [支付配置](PAYMENTS.md) 设置。
 7. 保存并部署设置。打开 Cloudflare 给出的 `https://…workers.dev` 地址，再访问该地址后面的 `/admin`。
 8. 输入 `BOOTSTRAP_TOKEN`，创建自己的店主账号和至少 12 位的密码。成功后，在 Cloudflare 删除 `BOOTSTRAP_TOKEN` 并重新部署；系统也会在数据库中阻止再次初始化。
 9. 在后台新建分类、商品，导入自己的可销售库存，填写站点服务信息。初始空商城没有真实商品与默认账号。
@@ -60,7 +60,7 @@ node scripts/generate-secret.mjs
 - **库存加密密钥未配置**：检查 `INVENTORY_KEY` 是否为 64 位十六进制且类型是 Secret。
 - **管理员初始化令牌不正确**：核对 Secret 与输入值，确认设置已经重新部署。
 - **后台出现演示入口**：说明 `DEMO_MODE` 为 `true`。演示与正式环境必须使用不同 Worker 和不同数据库；不要把已开放演示入口的数据库直接改成生产。
-- **支付不能使用**：这是当前预留状态。微信 / 支付宝并不会因为填一个密钥就自动可用，需按 PAYMENTS.md 接入。
+- **支付不能使用**：TRC20 USDT 请按 [支付配置](PAYMENTS.md) 填写收款地址、汇率和查询密钥，并核对每分钟 Cron Trigger。微信 / 支付宝仍未接入。
 
 ## 后续更新与回滚
 
