@@ -2,7 +2,7 @@
 
 面向中文用户的数字商品商城与运营后台。基于 React、Vinext、Cloudflare Workers 和 D1，包含真实持久化的数据接口。已集成 TRON 主网 TRC20 USDT 直收，未配置时关闭收款。
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/trandainho27-source/-)
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/trandainho27-source/chongqi-1)
 
 > 这是可继续运营开发的工程第一版。USDT 收款需先完成商家配置与实收测试；演示商品不提供真实第三方账号、授权或服务。正式运行请关闭演示模式，填写自己的商品与服务信息。
 
