@@ -42,13 +42,14 @@ npm run build
 npm run verify:worker
 ```
 
-安装脚本使用仓库的 npm 锁文件；Cloudflare 的构建环境也可使用仓库 `pnpm-lock.yaml`。
+安装脚本会通过 npm 自动运行固定版本 pnpm，并使用仓库 `pnpm-lock.yaml`；不需要你单独安装 pnpm。
 
-本地预览 D1 数据库需先构建；对新数据库，按顺序执行以下两个迁移文件，每个仅执行一次：
+本地预览 D1 数据库需先构建；对新数据库，按顺序执行以下三个迁移文件，每个仅执行一次：
 
 ```bash
 node node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0000_fast_glorian.sql
 node node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0001_youthful_millenium_guard.sql
+node node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0002_curly_vance_astro.sql
 ```
 
 本地运行时从 `.dev.vars` 读取秘密；不要提交该文件。本地开发服务器请运行 `npm run dev`。部署版本默认关闭演示模式，不存在通用默认密码。
@@ -57,7 +58,7 @@ node node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/s
 
 - `app/`：商城、帮助、订单、管理后台及 API 路由。
 - `lib/commerce/`：订单事务、权限、加密、安全工具和示例内容。
-- `db/schema.ts`、`drizzle/`：D1 表结构、索引、事务约束触发器及迁移记录。
+- `db/schema.ts`、`drizzle/`：D1 表结构、索引、事务守卫约束及迁移记录。
 - `wrangler.json`：自有 Cloudflare 账户的部署配置；`DB` 为数据库绑定名。
 - `.openai/hosting.json`：私有体验站使用的 Sites 配置，不用于识别你的 Cloudflare 账户。
 - `scripts/deploy-cloudflare.mjs`：建立 / 复用数据库、应用迁移、部署 Worker。
